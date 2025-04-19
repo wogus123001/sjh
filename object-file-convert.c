@@ -42,6 +42,27 @@ int repo_oid_to_algop(struct repository *repo, const struct object_id *src,
 	return 0;
 }
 
+const char *git_editor(void)
+{
+    const char *editor = getenv("GIT_EDITOR");
+    int terminal_is_dumb = is_terminal_dumb();
+
+    if (!editor && editor_program)
+        editor = editor_program;
+    if (!editor && !terminal_is_dumb)
+        editor = getenv("VISUAL");
+    if (!editor)
+        editor = getenv("EDITOR");
+
+    if (!editor && terminal_is_dumb)
+        return NULL;
+
+    if (!editor)
+        editor = DEFAULT_EDITOR;
+
+    return editor;
+}
+
 static int decode_tree_entry_raw(struct object_id *oid, const char **path,
 				 size_t *len, const struct git_hash_algo *algo,
 				 const char *buf, unsigned long size)
@@ -52,14 +73,6 @@ static int decode_tree_entry_raw(struct object_id *oid, const char **path,
 	if (size < hashsz + 3 || buf[size - (hashsz + 1)]) {
 		return -1;
 	}
-
-	*path = parse_mode(buf, &mode);
-	if (!*path || !**path)
-		return -1;
-	*len = strlen(*path) + 1;
-
-	oidread(oid, (const unsigned char *)*path + *len, algo);
-	return 0;
 }
 
 static int convert_tree_object(struct repository *repo,
@@ -138,6 +151,35 @@ static int convert_tag_object(struct repository *repo,
 	strbuf_release(&othersig);
 	strbuf_release(&oursig);
 	return 0;
+}
+
+int strbuf_edit_interactively(struct repository *r,
+                  struct strbuf *buffer, const char *path,
+                  const char *const *env)
+{
+    struct strbuf sb = STRBUF_INIT;
+    int fd, res = 0;
+
+    if (!is_absolute_path(path))
+        path = repo_git_path_append(r, &sb, "%s", path);
+
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0)
+        res = error_errno(_("could not open '%s' for writing"), path);
+    else if (write_in_full(fd, buffer->buf, buffer->len) < 0) {
+        res = error_errno(_("could not write to '%s'"), path);
+        close(fd);
+    } else if (close(fd) < 0)
+        res = error_errno(_("could not close '%s'"), path);
+    else {
+        strbuf_reset(buffer);
+        if (launch_editor(path, buffer, env) < 0)
+            res = error_errno(_("could not edit '%s'"), path);
+        unlink(path);
+    }
+
+    strbuf_release(&sb);
+    return res;
 }
 
 static int convert_commit_object(struct repository *repo,
